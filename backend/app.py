@@ -1,18 +1,15 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
 import os
 import shutil
 import nltk
 import re
-import base64
-import io
 from scraping import Scraping
 from nltk.corpus import stopwords, wordnet
 from nltk.stem import WordNetLemmatizer
 from nltk.sentiment import SentimentIntensityAnalyzer
 from nltk.tokenize import word_tokenize
-from wordcloud import WordCloud
 from typing import List
 
 app = Flask(__name__)
@@ -156,87 +153,121 @@ def analyze_movie():
     rating_distribution = df['Rating'].value_counts().sort_index().to_dict()
     avg_rating_by_sentiment = df.groupby('Sentiment_label')['Rating'].mean().to_dict()
 
-    # --- WORD CLOUD GENERATION ---
-    def generate_word_cloud(texts, movie_id):
-        """Generate a colorful word cloud from review texts"""
+    # --- WORDNET ANALYSIS ---
+    def get_wordnet_analysis(texts):
+        """Extract meaningful words using WordNet for semantic analysis"""
         try:
             # Combine all text
             all_text = " ".join([str(text) for text in texts if pd.notna(text) and str(text).strip()])
-            print(f"🔍 Generating word cloud from {len(all_text)} characters")
+            print(f"🔍 Analyzing text length: {len(all_text)} characters")
             
             if not all_text.strip():
-                print("⚠️ No text to generate word cloud")
-                return None
-            
-            # Create word cloud
-            wordcloud = WordCloud(
-                width=800,
-                height=400,
-                background_color='white',
-                max_words=100,
-                colormap='viridis',  # Colorful colormap
-                relative_scaling=0.5,
-                random_state=42
-            ).generate(all_text)
-            
-            # Save word cloud to memory
-            img_buffer = io.BytesIO()
-            wordcloud.to_image().save(img_buffer, format='PNG')
-            img_buffer.seek(0)
-            
-            # Convert to base64 for frontend
-            img_base64 = base64.b64encode(img_buffer.getvalue()).decode()
-            
-            print(f"✅ Word cloud generated successfully")
-            return f"data:image/png;base64,{img_base64}"
-            
-        except Exception as e:
-            print(f"❌ Word cloud generation error: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-    
-    def get_top_keywords(texts):
-        """Get top keywords for display (simplified version)"""
-        try:
-            # Combine all text
-            all_text = " ".join([str(text) for text in texts if pd.notna(text) and str(text).strip()])
-            
-            if not all_text.strip():
+                print("⚠️ No text to analyze")
                 return []
             
             # Tokenize and filter
             try:
                 tokens = word_tokenize(all_text.lower())
-            except Exception:
+                print(f"🔍 Tokenized into: {len(tokens)} tokens")
+            except Exception as e:
+                print(f"⚠️ Tokenization failed: {e}")
+                # Fallback to simple split
                 tokens = all_text.lower().split()
+                print(f"🔍 Fallback tokenization: {len(tokens)} tokens")
             
             meaningful_words = []
+            
+            # More lenient filtering
             for token in tokens:
-                if (len(token) > 2 and 
+                if (len(token) > 2 and  # Reduced from 3 to 2
                     token.isalpha() and 
                     token not in stop_words and
-                    len(token) < 20):
+                    len(token) < 20):  # Avoid very long words
                     meaningful_words.append(token)
             
+            print(f"🔍 After basic filtering: {len(meaningful_words)} words")
+            
             if not meaningful_words:
+                print("⚠️ No meaningful words found after filtering")
                 return []
             
             # Count frequency
             from collections import Counter
             word_counts = Counter(meaningful_words)
-            top_words = word_counts.most_common(15)
             
-            return [{"name": word, "value": count} for word, count in top_words]
+            # Get top words
+            top_words = word_counts.most_common(20)  # Increased from 15 to 20
+            print(f"🔍 Top words found: {len(top_words)}")
+            
+            wordnet_analysis = []
+            
+            for word, count in top_words:
+                # Try to get WordNet info, but don't require it
+                categories = []
+                try:
+                    synsets = wordnet.synsets(word)
+                    if synsets:
+                        # Get the first synset and its definition
+                        synset = synsets[0]
+                        categories.append({
+                            "definition": synset.definition(),
+                            "pos": synset.pos(),
+                            "examples": synset.examples()[:2] if synset.examples() else []
+                        })
+                except Exception as e:
+                    # If WordNet fails, just add the word without categories
+                    print(f"⚠️ WordNet lookup failed for '{word}': {e}")
+                
+                wordnet_analysis.append({
+                    "name": word,
+                    "value": count,
+                    "categories": categories
+                })
+            
+            print(f"🔍 Final analysis: {len(wordnet_analysis)} items")
+            return wordnet_analysis
             
         except Exception as e:
-            print(f"❌ Top keywords extraction error: {e}")
+            print(f"❌ WordNet analysis error: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
-    # Generate word cloud and get top keywords
+    # Apply WordNet analysis
     all_reviews_text = df["Review"].fillna("").tolist()
-    word_cloud_image = generate_word_cloud(all_reviews_text, movie_id)
-    top_keywords = get_top_keywords(all_reviews_text)
+    wordnet_analysis = get_wordnet_analysis(all_reviews_text)
+    
+    # Fallback if WordNet analysis fails
+    if not wordnet_analysis:
+        print("⚠️ WordNet analysis failed, using simple word frequency analysis")
+        try:
+            from collections import Counter
+            all_text = " ".join([str(text) for text in all_reviews_text if pd.notna(text) and str(text).strip()])
+            
+            if all_text.strip():
+                try:
+                    tokens = word_tokenize(all_text.lower())
+                except Exception:
+                    tokens = all_text.lower().split()
+                
+                meaningful_words = [token for token in tokens if len(token) > 2 and token.isalpha() and token not in stop_words and len(token) < 20]
+                
+                if meaningful_words:
+                    word_counts = Counter(meaningful_words)
+                    top_words = word_counts.most_common(20)
+                    wordnet_analysis = [{"name": word, "value": count, "categories": []} for word, count in top_words]
+                    print(f"✅ Fallback analysis completed: {len(wordnet_analysis)} words")
+                else:
+                    print("⚠️ No meaningful words found in fallback analysis")
+                    wordnet_analysis = []
+            else:
+                print("⚠️ No text available for fallback analysis")
+                wordnet_analysis = []
+        except Exception as e:
+            print(f"❌ Fallback analysis also failed: {e}")
+            import traceback
+            traceback.print_exc()
+            wordnet_analysis = []
 
     def _fallback_summary() -> str:
         pos_reviews = sentiment_counts.get('positive', 0)
@@ -259,7 +290,7 @@ def analyze_movie():
             verdict = "Overall negative audience reception."
         else:
             verdict = "Mixed audience reception."
-        top_kw = top_keywords[0]["name"] if top_keywords else None
+        top_kw = wordnet_analysis[0]["name"] if wordnet_analysis else None
         if top_kw:
             return f"⭐ Avg {avg_rating}/10. {verdict} Common theme: {top_kw}."
         return f"⭐ Avg {avg_rating}/10. {verdict}"
@@ -278,8 +309,7 @@ def analyze_movie():
         'rating_distribution': rating_distribution,
         'avg_rating_by_sentiment': avg_rating_by_sentiment,
         'total_reviews': int(len(df)),
-        'top_keywords': top_keywords,
-        'word_cloud_image': word_cloud_image,
+        'top_keywords': wordnet_analysis,
         'summary': ai_summary,
         'reviews': df.to_dict('records')
     })

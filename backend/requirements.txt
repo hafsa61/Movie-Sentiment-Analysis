@@ -1,9 +1,0 @@
-Flask
-flask_cors
-pandas
-nltk
-requests
-beautifulsoup4
-wordcloud
-matplotlib
-# Removed heavy AI deps for speed
